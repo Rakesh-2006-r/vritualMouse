@@ -1,0 +1,26 @@
+{
+    "dataset_dir": "dataset",
+    "videos_dir": "videos",
+    "classes": [
+        "move",
+        "left_click",
+        "right_click",
+        "double_click",
+        "drag",
+        "scroll",
+        "brightness",
+        "volume",
+        "screenshot",
+        "multi_select"
+    ],
+    "frame_skip": 4,
+    "image_size": 224,
+    "yolo_model": "yolov8n.pt",
+    "gesture_model_path": "best_gesture_model.pth",
+    "batch_size": 32,
+    "epochs": 20,
+    "learning_rate": 0.001,
+    "confidence_threshold": 0.6,
+    "alpha_smoothing": 0.5,
+    "cooldown_frames": 10
+}

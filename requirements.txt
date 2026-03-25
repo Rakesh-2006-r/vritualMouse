@@ -1,5 +1,11 @@
 numpy
-opencv-python
-mediapipe
 pyautogui
 screen-brightness-control
+ultralytics
+pillow
+pycaw
+comtypes
+torch
+torchvision
+av
+imageio

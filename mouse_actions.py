@@ -5,106 +5,135 @@ try:
     import screen_brightness_control as sbc
 except ImportError:
     sbc = None
-    print("Warning: screen_brightness_control not installed. Run `pip install screen-brightness-control` for brightness features.")
+    print("Warning: screen_brightness_control not installed.")
+
+# Optional – pycaw for true absolute volume control on Windows
+try:
+    from ctypes import cast, POINTER
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    _devices = AudioUtilities.GetSpeakers()
+    _interface = _devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    _volume = cast(_interface, POINTER(IAudioEndpointVolume))
+    PYCAW_AVAILABLE = True
+except Exception:
+    _volume = None
+    PYCAW_AVAILABLE = False
+
 
 class MouseActionController:
     """
-    Controller for executing mouse and system actions based on gestures.
-    Includes operations for clicking, dragging, scrolling, volume, brightness, and screenshots.
+    Executes mouse / system actions from gesture commands.
+    Supports: move, left-click, right-click, double-click,
+              drag, scroll, volume, brightness, screenshot, select-multiple.
     """
     def __init__(self):
-        # Disable pyautogui failsafe if necessary, but keep it on by default for safety
         pyautogui.FAILSAFE = False
-        
-        # State variables for drag and drop
         self.is_dragging = False
+        self._last_scroll_y = None
+        self._last_vol_spread = None
+        self._last_bri_spread = None
 
-    def move_cursor(self, x, y, duration=0.1):
-        """Move cursor to specific screen coordinates (x, y)."""
-        # Kalman filter smoothing can be added here
-        pyautogui.moveTo(x, y, duration=duration)
+    # ------------------------------------------------------------------ cursor
+    def move_cursor(self, x, y, duration=0.0):
+        pyautogui.moveTo(int(x), int(y), duration=duration)
 
+    # ------------------------------------------------------------------ clicks
     def left_click(self):
-        """Execute a single left click."""
         pyautogui.click(button='left')
         print("Action: Left Click")
 
     def right_click(self):
-        """Execute a single right click."""
         pyautogui.click(button='right')
         print("Action: Right Click")
 
     def double_click(self):
-        """Execute a double left click."""
         pyautogui.doubleClick()
         print("Action: Double Click")
 
+    # ------------------------------------------------------------------ drag
     def start_drag(self):
-        """Start drag operation (mouse down)."""
         if not self.is_dragging:
             pyautogui.mouseDown(button='left')
             self.is_dragging = True
             print("Action: Drag Started")
 
     def end_drag(self):
-        """End drag operation (mouse up)."""
         if self.is_dragging:
             pyautogui.mouseUp(button='left')
             self.is_dragging = False
             print("Action: Drag Ended")
 
-    def select_multiple_items(self, x_start, y_start, x_end, y_end):
-        """Select multiple items by dragging a box."""
-        pyautogui.moveTo(x_start, y_start)
-        pyautogui.dragTo(x_end, y_end, button='left', duration=0.5)
-        print("Action: Select Multiple Items")
+    # ------------------------------------------------------------------ scroll
+    def scroll(self, amount: int):
+        """
+        Vertical scrolling driven directly by velocity/amount.
+        Positive amount = scroll up, negative = scroll down.
+        """
+        pyautogui.scroll(amount)
 
-    def hold_ctrl_to_select(self, click_positions):
-        """Select multiple specific items by holding Ctrl and clicking them."""
-        pyautogui.keyDown('ctrl')
-        for pos in click_positions:
-            pyautogui.click(pos[0], pos[1])
-            time.sleep(0.1)
-        pyautogui.keyUp('ctrl')
-        print("Action: Selected Multiple Items via Control-Click")
+    # ------------------------------------------------------------------ select multiple
+    def select_multiple_start(self, x, y):
+        """Start a lasso-selection drag."""
+        self._sel_start = (x, y)
+        pyautogui.moveTo(x, y)
+        pyautogui.mouseDown(button='left')
+        print("Action: Select Multiple — Start")
+
+    def select_multiple_update(self, x, y):
+        pyautogui.moveTo(x, y)
+
+    def select_multiple_end(self):
+        pyautogui.mouseUp(button='left')
+        print("Action: Select Multiple — End")
+
+    # ------------------------------------------------------------------ volume
+    def set_volume_from_spread(self, spread: float):
+        """
+        spread: normalised 0-1 distance between index tip and thumb tip.
+        Maps linearly to 0-100% volume.
+        """
+        level = max(0.0, min(1.0, spread))
+        if PYCAW_AVAILABLE and _volume is not None:
+            # SetMasterVolumeLevelScalar maps 0.0-1.0 linearly to the correct dB
+            _volume.SetMasterVolumeLevelScalar(level, None)
+        else:
+            # Fallback: keypress simulation
+            steps = int(level * 50)
+            for _ in range(2):
+                pyautogui.press('volumeup' if level > 0.5 else 'volumedown')
 
     def set_volume_relative(self, increase=True, steps=2):
-        """Adjust system volume up or down."""
         key = 'volumeup' if increase else 'volumedown'
         for _ in range(steps):
             pyautogui.press(key)
-        print(f"Action: Volume {'Increased' if increase else 'Decreased'}")
+        print(f"Action: Volume {'Up' if increase else 'Down'}")
 
-    def set_volume_absolute(self, level_percentage):
-        """
-        Adjust volume proportionally based on a gesture (e.g. distance between fingers).
-        Since pyautogui only supports presses, this is a simulated smooth control.
-        For true absolute control, use `pycaw` library.
-        """
-        # For simplicity, if we want to mimic absolute control without pycaw, we spam up/down.
-        # It's recommended to install pycaw for true absolute volume control on Windows.
-        print("Action: Absolute Volume control requested (requires pycaw for direct setting).")
-
-    def set_brightness(self, level_percentage):
-        """Set screen brightness to a specific percentage (0-100)."""
+    # ------------------------------------------------------------------ brightness
+    def set_brightness_from_spread(self, spread: float):
+        """spread: normalised 0-1."""
+        level = int(max(0, min(100, spread * 100)))
         if sbc is not None:
-            # Ensure level is within 0-100
+            sbc.set_brightness(level)
+            print(f"Action: Brightness → {level}%")
+        else:
+            print("Action: Brightness skipped (screen_brightness_control missing)")
+
+    def set_brightness(self, level_percentage: float):
+        if sbc is not None:
             level = max(0, min(100, int(level_percentage)))
             sbc.set_brightness(level)
-            print(f"Action: Set Brightness to {level}%")
-        else:
-            print("Action: Brightness control failed (screen_brightness_control not installed).")
+            print(f"Action: Brightness → {level}%")
 
+    # ------------------------------------------------------------------ screenshot
     def take_screenshot(self, filename="screenshot.png"):
-        """Take a screenshot and save it."""
         try:
-            screenshot_img = pyautogui.screenshot()
-            screenshot_img.save(filename)
-            print(f"Action: Screenshot saved as {filename}")
+            pyautogui.screenshot().save(filename)
+            print(f"Action: Screenshot saved → {filename}")
         except Exception as e:
-            print(f"Action: Screenshot failed - {e}")
+            print(f"Action: Screenshot failed — {e}")
+
 
 if __name__ == "__main__":
-    # Test block
     controller = MouseActionController()
-    print("Testing controller initialized successfully.")
+    print("MouseActionController initialised OK.")

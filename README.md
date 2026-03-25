@@ -5,11 +5,9 @@ A professional AI-powered virtual mouse system that uses hand gestures to contro
 ## ✨ Features
 - **High-Precision Cursor Control**: Uses a **Kalman Filter** to smooth out hand jitter and provide steady cursor movement.
 - **Gesture Recognition**:
-  - **Single Finger/Pinch**: Left Click / Drag.
-  - **Two-Finger Pinch**: Right Click.
-  - **Fist**: Instant Screenshot.
-  - **Hand Positions**: System Volume and Brightness control.
-- **MediaPipe Tasks API**: Leveraging the latest Google MediaPipe 0.10+ vision models for robust hand tracking.
+  - Uses state of the art **Vision Transformer (ViT)** to classify hand crops and perform commands.
+  - Actions Supported: Click, Right-Click, Move, Screenshot, Volume, Brightness.
+- **YOLO Detection API**: Leveraging the **YOLO (Ultralytics)** model for robust real-time object tracking and parsing bounding boxes.
 
 ## 🚀 Installation
 
@@ -24,18 +22,19 @@ A professional AI-powered virtual mouse system that uses hand gestures to contro
     pip install -r requirements.txt
     ```
 
-3.  Download the model:
-    The app will automatically download the `hand_landmarker.task` file on first run.
+3.  Download models (Automatic):
+    The app will automatically download YOLO and ViT model bases on first run using PyTorch Hub and hugging face transformers.
 
 ## 🖱️ Usage
 Run the main script:
 ```bash
-python main.py
+py main.py
 ```
 
 ## 🛠️ Tech Stack
 - Python 3.10+
-- MediaPipe (HandLandmarker Tasks)
-- OpenCV
+- Ultralytics YOLO
+- Transformers (ViT)
+- PyTorch
 - PyAutoGUI
 - NumPy

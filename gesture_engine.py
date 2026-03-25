@@ -1,71 +1,131 @@
-import numpy as np
+"""
+gesture_engine.py  —  ViT-based classifier for YOLO hand crops
+================================================================
+
+This engine fulfills the "YOLO + ViT" requirement.
+It takes a cropped image of the hand (found via YOLO pose wrist keypoints)
+and runs it through a HuggingFace Vision Transformer (ViT) trained on hand gestures.
+
+Model: dima806/hand_gestures_image_detection
+"""
+
+import time
 import typing
+import numpy as np
+from PIL import Image
+
+try:
+    from transformers import pipeline
+    VIT_AVAILABLE = True
+except ImportError:
+    VIT_AVAILABLE = False
+
 
 class GestureEngine:
-    """
-    Classifies gestures from hand landmarks to identify mouse/system actions.
-    Supported: LEFT_CLICK, RIGHT_CLICK, MOVE, VOLUME_CONTROL, BRIGHTNESS_CONTROL, SCREENSHOT.
-    """
+    STABLE_FRAMES = 3
+
+    # ViT model labels mapped to our action triggers
+    # Labels: call, dislike, fist, four, like, mute, ok, one, palm, peace,
+    #         peace_inverted, rock, stop, stop_inverted, three, three2, two_up, two_up_inverted
+    VIT_MAPPING = {
+        "one": "INDEX_ONLY",           # Left Click
+        "peace": "V_SIGN",             # Right Click / Double Click
+        "peace_inverted": "V_SIGN",
+        "two_up": "V_SIGN",
+        "two_up_inverted": "V_SIGN",
+        "fist": "FIST",                # Drag / Scroll / Select Multi
+        "rock": "FIST",
+        "dislike": "FIST",             # treat thumb down as fist if misclassified
+        "palm": "OPEN_PALM",           # Move / Screenshot
+        "stop": "OPEN_PALM",
+        "stop_inverted": "OPEN_PALM",
+        "four": "OPEN_PALM",
+        "ok": "PINCH",                 # Volume / Brightness
+        "mute": "PINCH",
+        "like": "PINCH",               # sometimes thumb up looks like a pinch to model
+    }
+
     def __init__(self):
-        # State tracking
-        self.last_pinch = False
-        self.last_gesture = "IDLE"
+        self._history: list[str] = []
 
-    def get_distance(self, p1: typing.Any, p2: typing.Any) -> float:
-        """Distance between two landmarks (Normalized x, y, z)."""
-        return float(np.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2))
+        if VIT_AVAILABLE:
+            print("Loading ViT Gesture Model (this may take a few seconds)...")
+            # Run model on CPU/GPU depending on device (pipeline handles this if installed properly, 
+            # or we explicitly specify device if torch is available, but pipeline defaults to CPU usually 
+            # if no device=0 is provided. We'll let it use default to avoid CUDA errors).
+            self.classifier = pipeline(
+                "image-classification", 
+                model="dima806/hand_gestures_image_detection"
+            )
+            print("ViT Model loaded.")
+        else:
+            self.classifier = None
+            print("WARNING: transformers not installed. ViT will not work.")
 
-    def is_finger_up(self, landmarks: typing.List[typing.Any], finger_index: int) -> bool:
-        """Heuristic to check if a finger is extended (index=1-4)."""
-        # Tip index: 8 (index), 12 (middle), 16 (ring), 20 (pinky)
-        # Base index: 6 (index), 10 (middle), 14 (ring), 18 (pinky)
-        tip_idx = finger_index * 4 + 4
-        base_idx = tip_idx - 2
-        return landmarks[tip_idx].y < landmarks[base_idx].y
+    def classify_from_image(
+        self,
+        hand_crop: Image.Image,
+    ) -> typing.Tuple[str, float]:
+        """
+        Classifies a PIL Image crop of the hand using ViT.
+        Safe to call from a background thread.
+        """
+        if self.classifier is None or hand_crop is None:
+            return "IDLE", 0.0
 
-    def classify(self, landmarks: typing.List[typing.Any]) -> typing.Tuple[str, float]:
-        """Classifies pose from MediaPipe landmarks."""
-        if not landmarks:
-            return "No Hand", 0.0
+        # Run ViT
+        # pipeline returns a list of dicts: [{'label': 'palm', 'score': 0.99}, ...]
+        try:
+            results = self.classifier(hand_crop)
+            top_result = results[0]
+            label = top_result['label']
+            score = top_result['score']
+        except Exception as e:
+            print(f"ViT Error: {e}")
+            return self._stable("IDLE", 0.0)
 
-        # Primary tips
-        thumb_tip  = landmarks[4]
-        index_tip  = landmarks[8]
-        middle_tip = landmarks[12]
-        pinky_tip  = landmarks[20]
-
-        # Pinch distances (Thumb + Finger)
-        t_index_dist  = self.get_distance(thumb_tip, index_tip)
-        t_middle_dist = self.get_distance(thumb_tip, middle_tip)
-        t_pinky_dist  = self.get_distance(thumb_tip, pinky_tip)
-
-        # Threshold to classify as a "pinch" (meeting)
-        pinch_thresh = 0.05
+        # Map ViT label to our internal gesture logic
+        raw = self.VIT_MAPPING.get(label, "IDLE")
         
-        # --- Gesture Priority List ---
-        
-        # 1. SCREENSHOT (Fist detector)
-        if not any(self.is_finger_up(landmarks, i) for i in range(1, 5)):
-            return "SCREENSHOT", 1.0
+        # We enforce a higher confidence threshold for PINCH / INDEX
+        if raw in ("PINCH", "INDEX_ONLY") and score < 0.6:
+            raw = "IDLE"
 
-        # 2. BRIGHTNESS (Pinch Pinky)
-        if t_pinky_dist < pinch_thresh:
-            return "BRIGHTNESS_CONTROL", t_pinky_dist
+        return self._stable(raw, score)
 
-        # 3. RIGHT_CLICK (Pinch Middle)
-        if t_middle_dist < pinch_thresh:
-            return "RIGHT_CLICK", t_middle_dist
+    def map_to_action(
+        self,
+        gesture: str,
+        vy: float,
+        brightness_mode: bool = False,
+    ) -> str:
+        """Video-accurate mapping based on gesture rules."""
+        if gesture == "INDEX_ONLY":
+            return "LEFT_CLICK"
+        elif gesture == "V_SIGN":
+            return "RIGHT_CLICK"
+        elif gesture == "OPEN_PALM":
+            return "MOVE"
+        elif gesture == "FIST":
+            if abs(vy) > 80:
+                return "SCROLL"
+            return "DRAG"
+        elif gesture == "PINCH":
+            return "BRIGHTNESS" if brightness_mode else "VOLUME"
+        return "IDLE"
 
-        # 4. LEFT_CLICK / DRAG (Pinch Index)
-        if t_index_dist < pinch_thresh:
-            return "LEFT_CLICK", t_index_dist
-        
-        # 5. VOLUME (Index & Middle Up)
-        if self.is_finger_up(landmarks, 1) and self.is_finger_up(landmarks, 2):
-            return "VOLUME_CONTROL", 1.0
+    def _stable(self, gesture: str, conf: float) -> typing.Tuple[str, float]:
+        """Buffer system to prevent flickering."""
+        self._history.append(gesture)
+        if len(self._history) > self.STABLE_FRAMES:
+            self._history.pop(0)
 
-        # 6. MOVE (Only Index Up)
-        if self.is_finger_up(landmarks, 1):
-            return "MOVE", 1.0
+        if len(self._history) == self.STABLE_FRAMES and \
+           all(g == gesture for g in self._history):
+            return gesture, conf
 
-        return "IDLE", 0.0
+        from collections import Counter
+        most_common = Counter(self._history).most_common(1)[0][0]
+        return most_common, conf * 0.7
+
+
